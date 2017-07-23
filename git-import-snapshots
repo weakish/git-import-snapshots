@@ -1,0 +1,69 @@
+#!/bin/sh -e
+# Given a series of snapshot tarballs, generate a series of Git commits with
+# their contents. You can then graft a later repository on top of the result.
+#
+# You probably want to insert an empty commit at the start of the history in
+# case another early snapshot shows up later...
+#
+# Adam Sampson <ats@offog.org>
+
+for snap in "$@"; do
+	base=$(basename "$snap")
+	date=$(echo "$base" | perl -pe 's/.*(\d\d\d\d)(\d\d)(\d\d).*/$1-$2-$3/')
+	message="Import of snapshot $base"
+	if [ "$date" = "$base" ]; then
+		case "$base" in
+		*-pre*|*-kle*|*200*|*volker*|*devel*)
+			;;
+		*)
+			message="Import of release $base"
+			;;
+		esac
+		date=$(TZ=UTC ls -l --time-style="+%Y-%m-%d %H:%M:%S" "$snap" | awk '{print $6 " " $7}')
+	else
+		date="${date}T00:00:00 +0000"
+	fi
+	echo "$date - $message"
+
+	git rm --ignore-unmatch -fr .
+
+	# Prune empty directories, which the above won't get rid of.
+	if [ $(ls | wc -l) != 0 ]; then
+		find * -type d -print0 | sort -zr | xargs -0 rmdir
+	fi
+
+	if [ $(ls | wc -l) != 0 ]; then
+		echo "Failed to clean!"
+		exit 1
+	fi
+
+	tar \
+		--exclude '*.bak' \
+		--exclude '*.pyc' \
+		-xf "$snap"
+
+	# Clobber permissions.
+	# (I want this because I'm usually grafting onto a CVS/Darcs history
+	# that didn't track permissions; you may prefer not to do this.)
+	find . \( -not -path '*/.git*' \) -type d -print0 | xargs -0 chmod 755
+	find . \( -not -path '*/.git*' \) -type f -print0 | xargs -0 chmod 644
+
+	# If there's just a single top-level directory, it's actually
+	# the contents that we're interested in.
+	# (I wasn't consistent about whether I did this for some of my
+	# projects...)
+	if [ $(ls | wc -l) = 1 ]; then
+		dir=$(ls)
+		# FIXME: handle dotfiles
+		mv "$dir"/* .
+		rmdir "$dir"
+	fi
+
+	git add .
+
+	env \
+		GIT_AUTHOR_DATE="$date" \
+		GIT_COMMITTER_DATE="$date" \
+		git commit -m "$message" || true
+
+done
